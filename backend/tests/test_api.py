@@ -57,3 +57,27 @@ def test_chat_handler_dev():
     assert "response" in response
     assert "[ASTRACROWD AI" in response["response"]
 
+def test_telemetry_rate_limiting():
+    """Verify that multiple rapid telemetry ingestion triggers hit the 429 rate limiter."""
+    from app.main import rate_limit_telemetry, telemetry_rate_limit_db
+    from fastapi import Request
+    from unittest.mock import Mock
+
+    # Create a mock Request object
+    mock_request = Mock(spec=Request)
+    mock_request.client = Mock()
+    mock_request.client.host = "1.2.3.4"
+
+    # Reset telemetry rate limiter DB
+    telemetry_rate_limit_db.clear()
+
+    # Trigger 10 telemetry calls (below limit)
+    for _ in range(10):
+        asyncio.run(rate_limit_telemetry(mock_request))
+
+    # The 11th request must raise an HTTPException with status code 429
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(rate_limit_telemetry(mock_request))
+    assert exc.value.status_code == 429
+    assert "Rate limit" in exc.value.detail
+

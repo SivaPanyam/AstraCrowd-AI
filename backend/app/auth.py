@@ -3,6 +3,7 @@ from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import firebase_admin
 from firebase_admin import credentials, auth
+from app.logging_setup import logger
 
 # Security scheme for JWT extraction
 security = HTTPBearer()
@@ -15,14 +16,14 @@ try:
     if cred_path and os.path.exists(cred_path):
         cred = credentials.Certificate(cred_path)
         firebase_app = firebase_admin.initialize_app(cred)
-        print("[FIREBASE] Initialized successfully using Certificate path.")
+        logger.info("[FIREBASE] Initialized successfully using Certificate path.")
     else:
         # Fallback to application default credentials
         firebase_app = firebase_admin.initialize_app()
-        print("[FIREBASE] Initialized successfully using Default Credentials.")
+        logger.info("[FIREBASE] Initialized successfully using Default Credentials.")
 except Exception as e:
-    print(f"[FIREBASE] Warning: Could not initialize Firebase Admin SDK automatically: {e}")
-    print("[FIREBASE] Running in DEVELOPER BYPASS mode. Real token authentication will be bypassed.")
+    logger.warning(f"[FIREBASE] Warning: Could not initialize Firebase Admin SDK automatically: {e}")
+    logger.warning("[FIREBASE] Running in DEVELOPER BYPASS mode. Real token authentication will be bypassed.")
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
     """

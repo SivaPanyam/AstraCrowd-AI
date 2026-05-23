@@ -1,5 +1,6 @@
 from typing import List, Dict
 from fastapi import WebSocket
+from app.logging_setup import logger
 
 class ConnectionManager:
     def __init__(self):
@@ -12,25 +13,25 @@ class ConnectionManager:
         """Register a new dashboard client connection."""
         await websocket.accept()
         self.active_clients.append(websocket)
-        print(f"[WS MANAGER] Dashboard client connected. Total clients: {len(self.active_clients)}")
+        logger.info(f"[WS MANAGER] Dashboard client connected. Total clients: {len(self.active_clients)}")
 
     def disconnect_client(self, websocket: WebSocket):
         """Unregister a dashboard client connection."""
         if websocket in self.active_clients:
             self.active_clients.remove(websocket)
-            print(f"[WS MANAGER] Dashboard client disconnected. Total clients: {len(self.active_clients)}")
+            logger.info(f"[WS MANAGER] Dashboard client disconnected. Total clients: {len(self.active_clients)}")
 
     async def register_edge_node(self, node_id: str, websocket: WebSocket):
         """Register an edge computer vision telemetry camera node."""
         await websocket.accept()
         self.active_edge_nodes[node_id] = websocket
-        print(f"[WS MANAGER] Edge CV Node '{node_id}' online. Total edge nodes: {len(self.active_edge_nodes)}")
+        logger.info(f"[WS MANAGER] Edge CV Node '{node_id}' online. Total edge nodes: {len(self.active_edge_nodes)}")
 
     def disconnect_edge_node(self, node_id: str):
         """Unregister an edge CV camera node."""
         if node_id in self.active_edge_nodes:
             del self.active_edge_nodes[node_id]
-            print(f"[WS MANAGER] Edge CV Node '{node_id}' offline. Total edge nodes: {len(self.active_edge_nodes)}")
+            logger.info(f"[WS MANAGER] Edge CV Node '{node_id}' offline. Total edge nodes: {len(self.active_edge_nodes)}")
 
     async def broadcast_to_clients(self, message: dict):
         """Send JSON telemetry data to all active operational dashboards."""

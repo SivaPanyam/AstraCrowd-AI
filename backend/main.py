@@ -5,12 +5,41 @@ import random
 import time
 from typing import Dict, List, Any
 from contextlib import asynccontextmanager
+from collections import defaultdict
 
-from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, Query, status
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, auth
 from app.auth import get_current_user
+from app.logging_setup import logger
+
+# In-memory sliding-window telemetry rate limiter database
+telemetry_rate_limit_db = defaultdict(list)
+RATE_LIMIT_MAX_REQUESTS = 10  # Max 10 requests per 2 seconds
+RATE_LIMIT_WINDOW_SECONDS = 2.0
+
+async def rate_limit_telemetry(request: Request):
+    """
+    In-memory sliding-window rate limiter protecting `/api/telemetry` from edge DDoS.
+    """
+    client_ip = request.client.host if request.client else "unknown_edge_node"
+    now = time.time()
+    
+    # Prune old timestamps
+    timestamps = telemetry_rate_limit_db[client_ip]
+    telemetry_rate_limit_db[client_ip] = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
+    
+    if len(telemetry_rate_limit_db[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
+        logger.error(
+            f"Rate limit exceeded: DDoS behavior guarded from IP {client_ip}. Requests within window: {len(telemetry_rate_limit_db[client_ip])}"
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Telemetry ingestion rate limit reached."
+        )
+    
+    telemetry_rate_limit_db[client_ip].append(now)
 
 # =====================================================================
 # FIREBASE ADMIN SETUP & AUTHENTICATION
@@ -25,12 +54,12 @@ try:
     if cred_path and os.path.exists(cred_path):
         cred = credentials.Certificate(cred_path)
         firebase_app = firebase_admin.initialize_app(cred)
-        print("[FIREBASE] Initialized successfully using Certificate.")
+        logger.info("[FIREBASE] Initialized successfully using Certificate.")
     else:
         firebase_app = firebase_admin.initialize_app()
-        print("[FIREBASE] Initialized successfully using Default Credentials.")
+        logger.info("[FIREBASE] Initialized successfully using Default Credentials.")
 except Exception as e:
-    print(f"[FIREBASE] Warning: Running in DEVELOPER BYPASS mode: {e}")
+    logger.warning(f"[FIREBASE] Warning: Running in DEVELOPER BYPASS mode: {e}")
 
 async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) -> dict:
     """
@@ -38,7 +67,7 @@ async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) 
     If the token is invalid or missing, rejects the socket connection.
     """
     if not token:
-        print("[AUTH] WS Connection rejected: Token query parameter missing.")
+        logger.warning("[AUTH] WS Connection rejected: Token query parameter missing.")
         # Reject connection with policy violation status
         await websocket.accept()
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Token missing")
@@ -46,7 +75,7 @@ async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) 
         
     # Local developer bypass mode
     if token == "dev-token" or firebase_app is None:
-        print("[AUTH] WS Connection accepted via Developer Bypass.")
+        logger.info("[AUTH] WS Connection accepted via Developer Bypass.")
         return {
             "uid": "dev-guard-77",
             "name": "Local Guard 77",
@@ -58,7 +87,7 @@ async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) 
         decoded_token = auth.verify_id_token(token)
         return decoded_token
     except Exception as exc:
-        print(f"[AUTH] WS Token verification failed: {exc}")
+        logger.error(f"[AUTH] WS Token verification failed: {exc}")
         await websocket.accept()
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token")
         return None
@@ -85,14 +114,14 @@ class GuardConnectionManager:
             "zone": zone,
             "name": name
         }
-        print(f"[GUARD MANAGER] Guard '{name}' ({uid}) registered in zone '{zone}'. Total active: {len(self.active_guards)}")
+        logger.info(f"[GUARD MANAGER] Guard '{name}' ({uid}) registered in zone '{zone}'. Total active: {len(self.active_guards)}")
 
     def disconnect(self, uid: str):
         """Unregister a disconnected guard connection."""
         if uid in self.active_guards:
             name = self.active_guards[uid]["name"]
             del self.active_guards[uid]
-            print(f"[GUARD MANAGER] Guard '{name}' ({uid}) disconnected. Remaining: {len(self.active_guards)}")
+            logger.info(f"[GUARD MANAGER] Guard '{name}' ({uid}) disconnected. Remaining: {len(self.active_guards)}")
 
     async def broadcast_to_zone(self, target_zones: List[str], message: dict):
         """Sends a JSON alert message to guards stationed ONLY in the targeted zones."""
@@ -111,7 +140,7 @@ class GuardConnectionManager:
             self.disconnect(uid)
             
         if sent_count > 0:
-            print(f"[GUARD MANAGER] Transmitted zone alert to {sent_count} guards in: {target_zones}")
+            logger.info(f"[GUARD MANAGER] Transmitted zone alert to {sent_count} guards in: {target_zones}")
 
 
 class EdgeConnectionManager:
@@ -123,22 +152,22 @@ class EdgeConnectionManager:
     async def connect_client(self, websocket: WebSocket):
         await websocket.accept()
         self.active_clients.append(websocket)
-        print(f"[EDGE MANAGER] Dashboard client online. Total: {len(self.active_clients)}")
+        logger.info(f"[EDGE MANAGER] Dashboard client online. Total: {len(self.active_clients)}")
 
     def disconnect_client(self, websocket: WebSocket):
         if websocket in self.active_clients:
             self.active_clients.remove(websocket)
-            print(f"[EDGE MANAGER] Dashboard client offline. Total: {len(self.active_clients)}")
+            logger.info(f"[EDGE MANAGER] Dashboard client offline. Total: {len(self.active_clients)}")
 
     async def register_edge_node(self, node_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_edge_nodes[node_id] = websocket
-        print(f"[EDGE MANAGER] CV Node '{node_id}' online. Total: {len(self.active_edge_nodes)}")
+        logger.info(f"[EDGE MANAGER] CV Node '{node_id}' online. Total: {len(self.active_edge_nodes)}")
 
     def disconnect_edge_node(self, node_id: str):
         if node_id in self.active_edge_nodes:
             del self.active_edge_nodes[node_id]
-            print(f"[EDGE MANAGER] CV Node '{node_id}' offline. Total: {len(self.active_edge_nodes)}")
+            logger.info(f"[EDGE MANAGER] CV Node '{node_id}' offline. Total: {len(self.active_edge_nodes)}")
 
     async def broadcast_to_clients(self, message: dict):
         disconnected = []
@@ -174,7 +203,7 @@ async def congestion_predictor_task():
     Predicts congestion at 'Gate 3' and broadcasts a warning JSON payload 
     ONLY to guards stationed in 'Gate 3' or 'CommandCenter'.
     """
-    print("[PREDICTOR] Ingress Congestion Predictor Worker active.")
+    logger.info("[PREDICTOR] Ingress Congestion Predictor Worker active.")
     while True:
         try:
             await asyncio.sleep(10)  # Evaluate camera feeds every 10 seconds
@@ -194,10 +223,10 @@ async def congestion_predictor_task():
             await guard_manager.broadcast_to_zone(["Gate 3", "CommandCenter"], alert_payload)
             
         except asyncio.CancelledError:
-            print("[PREDICTOR] Worker shutting down cleanly.")
+            logger.info("[PREDICTOR] Worker shutting down cleanly.")
             break
         except Exception as e:
-            print(f"[PREDICTOR ERROR] Service encountered anomaly: {e}")
+            logger.error(f"[PREDICTOR ERROR] Service encountered anomaly: {e}")
             await asyncio.sleep(5)
 
 
@@ -252,7 +281,7 @@ class TelemetryPayload(BaseModel):
     timestamp: str  # ISO-8601 string
 
 @app.post("/api/telemetry", status_code=201)
-async def post_telemetry_endpoint(payload: TelemetryPayload):
+async def post_telemetry_endpoint(payload: TelemetryPayload, request: Request = None, _ = Depends(rate_limit_telemetry)):
     """
     Receives JSON telemetry from edge-cv node detectors and broadcasts
     calculated crowd flow rates and congestion warnings to connected dashboards.
@@ -260,7 +289,7 @@ async def post_telemetry_endpoint(payload: TelemetryPayload):
     # Normalize Gate ID by replacing underscores with spaces (e.g. "Gate_1" to "Gate 1")
     zone = payload.gate_id.replace("_", " ")
     density = payload.density_percentage
-    print(f"[API TELEMETRY] Inflow registered from {zone}: Density={density}%")
+    logger.info(f"[API TELEMETRY] Inflow registered from {zone}: Density={density}%")
     
     # Dynamically update the local gates database to match live edge counts
     gate_found = False
@@ -342,7 +371,7 @@ async def chat_endpoint(payload: ChatRequest, user: dict = Depends(get_current_u
     
     # Elegant fallback for developer offline/sandbox prototyping
     if not api_key:
-        print("[GEMINI] API Key missing. Generating rich sandbox operational report...")
+        logger.warning("[GEMINI] API Key missing. Generating rich sandbox operational report...")
         return {
             "response": generate_mock_gemini_report(payload.prompt)
         }
@@ -362,10 +391,10 @@ async def chat_endpoint(payload: ChatRequest, user: dict = Depends(get_current_u
         )
         return {"response": response.text}
     except ImportError:
-        print("[GEMINI] google-genai SDK not available. Using dynamic local fallback...")
+        logger.warning("[GEMINI] google-genai SDK not available. Using dynamic local fallback...")
         return {"response": generate_mock_gemini_report(payload.prompt)}
     except Exception as e:
-        print(f"[GEMINI ERROR] Generation failed: {e}")
+        logger.error(f"[GEMINI ERROR] Generation failed: {e}")
         return {
             "response": f"[FALLBACK ERROR RESPONSE] Operational assistant could not process prompts dynamically: {e}.\nLive Gate metrics: Gate 3 capacity at {gates_db[2]['capacity']}%."
         }
@@ -427,12 +456,12 @@ async def websocket_alerts_endpoint(
         while True:
             # Maintain active connection, listening for incoming status updates from guards
             data = await websocket.receive_text()
-            print(f"[WS GUARD ALERT] Msg from {name} ({uid}): {data}")
+            logger.info(f"[WS GUARD ALERT] Msg from {name} ({uid}): {data}")
             
     except WebSocketDisconnect:
         guard_manager.disconnect(uid)
     except Exception as e:
-        print(f"[WS GUARD ERROR] Exception with {name}: {e}")
+        logger.error(f"[WS GUARD ERROR] Exception with {name}: {e}")
         guard_manager.disconnect(uid)
 
 
