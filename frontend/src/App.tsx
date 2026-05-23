@@ -13,6 +13,7 @@ import {
   getGateBadgeColorClass,
   shouldDivertSignage,
 } from './gateThresholds'
+import { getApiBase, getWsBase } from './apiConfig'
 import { 
   Users, 
   Clock, 
@@ -77,9 +78,7 @@ function useStadiumWebsocket(
       setWsStatus('connecting')
       console.log(`[WS HOOK] Connecting to real-time guard system...`)
       
-      // Resolve backend WebSocket base URL from env variable with safe fallback
-      const envBase = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000'
-      const wsUrl = `${envBase}/ws/alerts?token=${token}&zone=${zone}`
+      const wsUrl = `${getWsBase()}/ws/alerts?token=${token}&zone=${zone}`
       
       try {
         const ws = new WebSocket(wsUrl)
@@ -358,8 +357,7 @@ export default function App() {
     addLog(`[AI CHAT] Sending query to Gemini Copilot...`)
 
     try {
-      const apiBase = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:8000'
-      const response = await fetch(`${apiBase}/api/chat`, {
+      const response = await fetch(`${getApiBase()}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -581,8 +579,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return
 
-    const envBase = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000'
-    const clientWsUrl = `${envBase}/ws/client`
+    const clientWsUrl = `${getWsBase()}/ws/client`
     let clientWs: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 

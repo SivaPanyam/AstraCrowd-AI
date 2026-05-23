@@ -9,6 +9,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+# Backend URLs are baked in at build time (set by Cloud Build after backend deploy)
+ARG VITE_BACKEND_API_URL=http://localhost:8000
+ARG VITE_BACKEND_WS_URL=ws://localhost:8000
+ENV VITE_BACKEND_API_URL=$VITE_BACKEND_API_URL
+ENV VITE_BACKEND_WS_URL=$VITE_BACKEND_WS_URL
+
 # Copy sources and compile production bundle
 COPY . .
 RUN npm run build

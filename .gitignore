@@ -26,6 +26,7 @@ venv/
 *.json
 !package.json
 !tsconfig.json
+!tsconfig.*.json
 !vite.config.ts
 !manifest.webmanifest
 # Block explicit service account json key files

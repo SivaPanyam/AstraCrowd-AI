@@ -33,7 +33,6 @@ ENV PYTHONUNBUFFERED=1
 
 # Copy application source files
 COPY app/ ./app
-COPY main.py .
 
 # Cloud Run defaults to exposing port 8080
 EXPOSE 8080

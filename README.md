@@ -19,25 +19,18 @@ Repository: [https://github.com/SivaPanyam/AstraCrowd-AI](https://github.com/Siv
 
 ## Architecture
 
+**Production (single URL)** — one Docker image runs nginx (port 8080) and FastAPI (internal 8081). The browser uses the same host for the PWA, `/api/*`, and `/ws/*`.
+
 ```
-┌─────────────┐     POST /api/telemetry      ┌──────────────────┐
-│   edge-cv   │ ───────────────────────────► │  FastAPI backend │
-│  (YOLOv8)   │     WS /ws/edge/{node_id}    │    port 8000     │
-└─────────────┘                              └────────┬─────────┘
-                                                      │
-                        ┌─────────────────────────────┼─────────────────────────────┐
-                        ▼                             ▼                             ▼
-                 WS /ws/client                 WS /ws/alerts                  POST /api/chat
-                 (dashboard)                   (guards)                      (Gemini AI)
-                        │                             │
-                        └──────────────┬──────────────┘
-                                       ▼
-                              ┌─────────────────┐
-                              │ React + Vite    │
-                              │ PWA dashboard   │
-                              │ port 5173       │
-                              └─────────────────┘
+                    ┌─────────────────────────────────────┐
+  Browser ────────► │  nginx :8080  (Cloud Run / Docker) │
+                    │    /          → React PWA           │
+                    │    /api/*     → FastAPI             │
+                    │    /ws/*      → FastAPI WebSockets  │
+                    └─────────────────────────────────────┘
 ```
+
+**Local dev** — optional split stack via `start_local_system.py` (frontend :5173, API :8000).
 
 ---
 
@@ -101,6 +94,14 @@ Press **Ctrl+C** in that terminal to stop everything cleanly.
 | **API docs (Swagger)** | [http://localhost:8000/docs](http://localhost:8000/docs) |
 
 On the login screen, use **Enter Sandbox** (or leave credentials empty and sign in) for local development without Firebase.
+
+### Docker (single URL — same as Cloud Run)
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:8080](http://localhost:8080) — dashboard, API, and WebSockets on one origin.
 
 ---
 
@@ -201,15 +202,38 @@ python test_astracrowd.py
 
 ---
 
-## Deployment
+## Deployment (Cloud Run — single URL)
 
-Google Cloud Build pipeline (`cloudbuild.yaml`) builds Docker images for backend and frontend and deploys both to **Cloud Run**.
+Prerequisites: [Google Cloud SDK](https://cloud.google.com/sdk), billing enabled, project selected (`gcloud config set project YOUR_PROJECT`).
 
 ```bash
+# One-time: enable APIs and Artifact Registry
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+gcloud artifacts repositories create astracrowd-registry \
+  --repository-format=docker --location=us-central1 || true
+
+# Build and deploy (root Dockerfile → one Cloud Run service)
 gcloud builds submit --config=cloudbuild.yaml
+
+# Get your live URL
+gcloud run services describe astracrowd-ai --region=us-central1 --format='value(status.url)'
 ```
 
-Configure substitution variables (`_LOCATION`, `_REPO_NAME`, service names) and secrets in your GCP project before production deploy.
+Optional secrets on the service:
+
+```bash
+gcloud run services update astracrowd-ai --region=us-central1 \
+  --set-env-vars=ENVIRONMENT=production \
+  --set-secrets=GEMINI_API_KEY=gemini-api-key:latest
+```
+
+| Path on your URL | Purpose |
+|------------------|---------|
+| `/` | Stadium ops dashboard |
+| `/api/telemetry` | Edge camera ingest |
+| `/api/chat` | AI copilot |
+| `/docs` | Swagger UI |
+| `/health` | Health check |
 
 ---
 
@@ -217,12 +241,13 @@ Configure substitution variables (`_LOCATION`, `_REPO_NAME`, service names) and 
 
 ```
 AstraCrowd-AI/
-├── backend/           # FastAPI API, WebSockets, auth, tests
-│   └── app/
-├── frontend/          # React + TypeScript + Vite PWA dashboard
-├── edge-cv/           # YOLOv8 edge telemetry (optional)
-├── DESIGN.md          # UI design system specification
-├── cloudbuild.yaml    # GCP Cloud Build / Cloud Run
+├── Dockerfile         # Unified image (nginx + FastAPI) for Cloud Run
+├── docker-compose.yml # Local single-URL preview on :8080
+├── deploy/            # nginx.conf + start.sh for unified container
+├── backend/           # FastAPI app, tests
+├── frontend/          # React + Vite PWA
+├── edge-cv/           # YOLOv8 edge telemetry (optional, separate)
+├── cloudbuild.yaml    # GCP build → deploy astracrowd-ai
 └── start_local_system.py
 ```
 

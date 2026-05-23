@@ -131,14 +131,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
+@app.get("/health")
+def health_check():
+    """Liveness probe for Docker / load balancers (proxied at /health)."""
     return {
         "status": "online",
         "service": "astracrowd-core",
         "guards_online": len(guard_manager.active_guards),
-        "cv_nodes_online": len(edge_manager.active_edge_nodes)
+        "cv_nodes_online": len(edge_manager.active_edge_nodes),
     }
+
+
+@app.get("/")
+def read_root():
+    return health_check()
 
 from pydantic import BaseModel, field_validator
 

@@ -1,0 +1,10 @@
+services:
+  astracrowd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - ENVIRONMENT=production
+      # Optional: GEMINI_API_KEY=your-key
