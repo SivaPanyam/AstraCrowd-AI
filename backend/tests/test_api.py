@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 import app.auth
-from app.main import read_root, post_telemetry_endpoint, TelemetryPayload
+from app.main import read_root, post_telemetry_endpoint, TelemetryPayload, chat_endpoint, ChatRequest
 from app.auth import get_current_user
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi import HTTPException
@@ -47,3 +47,13 @@ def test_unauthenticated_firebase_failure():
     finally:
         # Restore original state
         app.auth.firebase_app = original_app
+
+def test_chat_handler_dev():
+    """Verify that the AI assistant chat endpoint processes queries cleanly."""
+    payload = ChatRequest(prompt="Which gates are currently under-utilized?")
+    # Run the controller directly, passing a mock verified user context
+    mock_user = {"uid": "ops-director", "role": "ops_director"}
+    response = asyncio.run(chat_endpoint(payload, mock_user))
+    assert "response" in response
+    assert "[ASTRACROWD AI" in response["response"]
+

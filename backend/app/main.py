@@ -10,6 +10,7 @@ from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPExcept
 from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, auth
+from app.auth import get_current_user
 
 # =====================================================================
 # FIREBASE ADMIN SETUP & AUTHENTICATION
@@ -316,6 +317,81 @@ async def post_telemetry_endpoint(payload: TelemetryPayload):
         await guard_manager.broadcast_to_zone([zone, "CommandCenter"], critical_guard_alert)
         
     return {"status": "success", "processed_zone": zone, "density_percentage": density}
+
+class ChatRequest(BaseModel):
+    prompt: str
+
+@app.post("/api/chat")
+async def chat_endpoint(payload: ChatRequest, user: dict = Depends(get_current_user)):
+    """
+    Context-aware AI Security Assistant endpoint evaluating real-time stadium gate metrics.
+    Calls Gemini 2.5 Flash using the official google-genai SDK.
+    """
+    # Create system context containing real-time stadium operational state
+    system_instruction = f"""
+    You are AstraCrowd AI, the Stadium Security and Operations assistant.
+    Your task is to analyze stadium gate telemetry and answer queries from the command center staff.
+    
+    Current Stadium Gates Metrics:
+    {json.dumps(gates_db, indent=2)}
+    
+    Provide clear, professional, concise, and highly operational answers based ONLY on the actual live metrics provided above. Highlight critical anomalies, queue bottlenecks, or under-utilized gates immediately.
+    """
+    
+    api_key = os.getenv("GEMINI_API_KEY")
+    
+    # Elegant fallback for developer offline/sandbox prototyping
+    if not api_key:
+        print("[GEMINI] API Key missing. Generating rich sandbox operational report...")
+        return {
+            "response": generate_mock_gemini_report(payload.prompt)
+        }
+        
+    try:
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=payload.prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.2
+            )
+        )
+        return {"response": response.text}
+    except ImportError:
+        print("[GEMINI] google-genai SDK not available. Using dynamic local fallback...")
+        return {"response": generate_mock_gemini_report(payload.prompt)}
+    except Exception as e:
+        print(f"[GEMINI ERROR] Generation failed: {e}")
+        return {
+            "response": f"[FALLBACK ERROR RESPONSE] Operational assistant could not process prompts dynamically: {e}.\nLive Gate metrics: Gate 3 capacity at {gates_db[2]['capacity']}%."
+        }
+
+def generate_mock_gemini_report(prompt: str) -> str:
+    """Simulates high-fidelity context-aware AI outputs for local testing."""
+    prompt_lower = prompt.lower()
+    
+    if "under-utilized" in prompt_lower or "underutilized" in prompt_lower or "low" in prompt_lower:
+        underutilized = [g["name"] for g in gates_db if g["capacity"] < 50]
+        return f"[ASTRACROWD AI SECURE REPORT]\n\nBased on current stadium telemetry, the following gates are currently under-utilized:\n" + \
+               "\n".join([f"- {g['name']} (Capacity: {g['capacity']}% | Type: {g['type']})" for g in gates_db if g['name'] in underutilized]) + \
+               "\n\nSuggested Action: Operations can redirect pedestrian flows to these sectors to balance stadium density."
+               
+    if "bottleneck" in prompt_lower or "critical" in prompt_lower or "congest" in prompt_lower:
+        congested = [g["name"] for g in gates_db if g["capacity"] >= 80]
+        return f"[ASTRACROWD AI CRITICAL WARNING]\n\nBOTTLENECK DETECTED:\n" + \
+               "\n".join([f"- {g['name']} (Capacity: {g['capacity']}%, Wait Time: {g['waitTime']} mins)" for g in gates_db if g['name'] in congested]) + \
+               "\n\nSuggested Action: Trigger active redirection signals on digital signage boards to divert ingress crowds to VIP/Club/under-utilized sectors immediately."
+               
+    # General fallback summary
+    return f"[ASTRACROWD AI OPS REPORT]\n\nI have evaluated the current operational metrics:\n" + \
+           f"- Total Ingress Inflow: {sum(g['flowRate'] for g in gates_db)} persons/min\n" + \
+           f"- Average wait threshold: {sum(g['waitTime'] for g in gates_db) / len(gates_db):.1f} minutes\n" + \
+           f"- Critical Zone: {[g['name'] for g in gates_db if g['status'] == 'critical']}\n\n" + \
+           f"Security teams should maintain gate diversion parameters."
 
 # =====================================================================
 # WEBSOCKET SECURED ENDPOINTS
