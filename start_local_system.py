@@ -102,7 +102,7 @@ def main():
     print(f"{COLOR_SYSTEM}[SYSTEM] Press Ctrl+C at any time to terminate the entire stack cleanly.{COLOR_RESET}\n")
 
     # 1. Environment 1: FastAPI Backend
-    backend_cmd = "uvicorn main:app --host 0.0.0.0 --port 8000"
+    backend_cmd = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
     launch_process(backend_cmd, backend_dir, "[BACKEND]", COLOR_BACKEND)
 
     # 2. Environment 2: Vite Frontend PWA

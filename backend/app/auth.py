@@ -1,5 +1,5 @@
 import os
-from fastapi import HTTPException, Security, status
+from fastapi import HTTPException, Security, status, WebSocket, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import firebase_admin
 from firebase_admin import credentials, auth
@@ -29,16 +29,26 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     """
     FastAPI security dependency to extract and verify the Firebase ID Token.
     Returns decoded user claims. Bypasses real check in developer mode if token is 'dev-token'.
+    Secured against production environment bypasses.
     """
     token = credentials.credentials
+    is_production = os.getenv("ENVIRONMENT") == "production"
     
+    # Block developer backdoors in production
+    if is_production and (token == "dev-token" or token == "dummy-guard-token"):
+        logger.error(f"[SECURITY] Attempted backdoor credentials access in production: {token}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Developer backdoor token disabled in production environment."
+        )
+        
     # Enable a simple bypass for local developers running tests or frontend prototyping
     if token == "dummy-guard-token":
         return {
             "uid": "guard_dev_001",
             "email": "guard1@stadiumsec.com",
             "role": "FieldStaff",
-            "zone": "Gate_3"
+            "zone": "Gate 3",
         }
 
     if token == "dev-token" or firebase_app is None:
@@ -59,3 +69,54 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
             detail=f"Invalid or expired authentication credentials: {exc}",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) -> dict:
+    """
+    Extracts and verifies the Firebase ID Token from WebSocket query parameter.
+    If the token is invalid or missing, rejects the socket connection.
+    Secured against production environment bypasses.
+    """
+    is_production = os.getenv("ENVIRONMENT") == "production"
+    
+    if not token:
+        logger.warning("[AUTH] WS Connection rejected: Token query parameter missing.")
+        # Reject connection with policy violation status
+        await websocket.accept()
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Token missing")
+        return None
+
+    # Block developer backdoors in production
+    if is_production and (token == "dev-token" or token == "dummy-guard-token"):
+        logger.error(f"[SECURITY] Blocked backdoor token '{token}' in production environment.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Developer backdoor token disabled in production environment."
+        )
+        
+    # Local developer bypass mode
+    if token == "dummy-guard-token":
+        logger.info("[AUTH] WS Connection accepted via Dummy Guard Bypass.")
+        return {
+            "uid": "guard_dev_001",
+            "email": "guard1@stadiumsec.com",
+            "role": "FieldStaff",
+            "zone": "Gate 3",
+        }
+        
+    if token == "dev-token" or firebase_app is None:
+        logger.info("[AUTH] WS Connection accepted via Developer Bypass.")
+        return {
+            "uid": "dev-guard-77",
+            "name": "Local Guard 77",
+            "role": "guard",
+            "zone": "Gate 3"  # Mock zone claim
+        }
+        
+    try:
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except Exception as exc:
+        logger.error(f"[AUTH] WS Token verification failed: {exc}")
+        await websocket.accept()
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token")
+        return None

@@ -1,4 +1,5 @@
 import time
+from app.thresholds import is_congested_for_routing
 
 class GeminiOrchestrator:
     def __init__(self, api_key: str = None):
@@ -9,8 +10,8 @@ class GeminiOrchestrator:
         Uses Gemini cognitive models to evaluate camera metrics and ticketing flow rates,
         generating structured redirection pathways for gates experiencing bottlenecks.
         """
-        # Find gates that are currently at critical or warning congestion
-        congested_gates = [g for g in gate_metrics if g.get("capacity", 0) >= 80]
+        # Find gates at critical congestion (>= 85% per DESIGN.md)
+        congested_gates = [g for g in gate_metrics if is_congested_for_routing(g.get("capacity", 0))]
         
         if congested_gates:
             critical_gate_name = congested_gates[0]["name"]

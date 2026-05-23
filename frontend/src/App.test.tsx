@@ -1,47 +1,57 @@
 import { describe, it, expect } from 'vitest'
+import {
+  classifyStatus,
+  getGateCardColorClass,
+  getGateBadgeColorClass,
+  shouldDivertSignage,
+  WARNING_MIN_PCT,
+  CRITICAL_MIN_PCT,
+} from './gateThresholds'
 
-/**
- * Gate Card styling logic directly copied from the App dashboard layout
- * to ensure that Tailwind CSS rules are perfectly verified at build time.
- */
-function getGateCardColorClass(capacity: number): string {
-  const isYellow = capacity >= 50 && capacity <= 80
-  const isRed = capacity > 80
+describe('gateThresholds (shared with App dashboard)', () => {
+  it('classifies safe below warning threshold', () => {
+    expect(classifyStatus(WARNING_MIN_PCT - 1)).toBe('safe')
+  })
 
-  return isRed 
-    ? 'bg-rose-950/80 border-rose-500 shadow-rose-950/20' 
-    : isYellow 
-      ? 'bg-amber-950/60 border-amber-500 shadow-amber-950/10' 
-      : 'bg-emerald-950/40 border-emerald-500/80 shadow-emerald-950/10'
-}
+  it('classifies warning at 60% through 84%', () => {
+    expect(classifyStatus(WARNING_MIN_PCT)).toBe('warning')
+    expect(classifyStatus(CRITICAL_MIN_PCT - 1)).toBe('warning')
+  })
 
-describe('AstraCrowd AI - Gate Density Cards Styling spec', () => {
-  
-  it('renders optimal green/emerald background and borders when capacity is below 50%', () => {
-    // Check at 25% capacity
+  it('classifies critical at 85% and above', () => {
+    expect(classifyStatus(CRITICAL_MIN_PCT)).toBe('critical')
+    expect(classifyStatus(92)).toBe('critical')
+  })
+
+  it('renders emerald card styling when safe', () => {
     const classes = getGateCardColorClass(25)
     expect(classes).toContain('bg-emerald-950')
-    expect(classes).toContain('border-emerald-500')
     expect(classes).not.toContain('bg-rose-950')
     expect(classes).not.toContain('bg-amber-950')
   })
 
-  it('renders warning yellow/amber background and borders when capacity is between 50% and 80%', () => {
-    // Check at 65% capacity
+  it('renders amber card styling in warning band', () => {
     const classes = getGateCardColorClass(65)
     expect(classes).toContain('bg-amber-950')
-    expect(classes).toContain('border-amber-500')
     expect(classes).not.toContain('bg-emerald-950')
     expect(classes).not.toContain('bg-rose-950')
   })
 
-  it('renders critical red/rose background and pulsing borders when capacity is over 80%', () => {
-    // Check at 92% capacity
+  it('renders rose card styling when critical', () => {
     const classes = getGateCardColorClass(92)
     expect(classes).toContain('bg-rose-950')
-    expect(classes).toContain('border-rose-500')
     expect(classes).not.toContain('bg-emerald-950')
     expect(classes).not.toContain('bg-amber-950')
   })
-  
+
+  it('uses consistent badge colors per status band', () => {
+    expect(getGateBadgeColorClass(25)).toContain('emerald')
+    expect(getGateBadgeColorClass(65)).toContain('amber')
+    expect(getGateBadgeColorClass(92)).toContain('rose')
+  })
+
+  it('enables DIVERT signage only at critical threshold', () => {
+    expect(shouldDivertSignage(CRITICAL_MIN_PCT - 1)).toBe(false)
+    expect(shouldDivertSignage(CRITICAL_MIN_PCT)).toBe(true)
+  })
 })

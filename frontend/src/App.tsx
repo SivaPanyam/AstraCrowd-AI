@@ -7,6 +7,12 @@ import {
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth'
+import {
+  classifyStatus,
+  getGateCardColorClass,
+  getGateBadgeColorClass,
+  shouldDivertSignage,
+} from './gateThresholds'
 import { 
   Users, 
   Clock, 
@@ -71,9 +77,9 @@ function useStadiumWebsocket(
       setWsStatus('connecting')
       console.log(`[WS HOOK] Connecting to real-time guard system...`)
       
-      // Select appropriate protocol based on location (WSS support)
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${protocol}//localhost:8000/ws/alerts?token=${token}&zone=${zone}`
+      // Resolve backend WebSocket base URL from env variable with safe fallback
+      const envBase = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000'
+      const wsUrl = `${envBase}/ws/alerts?token=${token}&zone=${zone}`
       
       try {
         const ws = new WebSocket(wsUrl)
@@ -297,6 +303,11 @@ export default function App() {
     { name: 'Gate 4', flowRate: 15, waitTime: 1, capacity: 12, status: 'safe', type: 'VIP', signage: 'NORMAL' }
   ])
 
+  // Live telemetry indicator — true once a real edge-camera packet arrives
+  const [isLiveTelemetry, setIsLiveTelemetry] = useState<boolean>(false)
+  // Ref to the mock data setInterval so we can kill it on first live packet
+  const mockIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   // "Eyes-Up" Urgent Incident States
   const [eyesUpAlert, setEyesUpAlert] = useState<{
     active: boolean
@@ -347,7 +358,8 @@ export default function App() {
     addLog(`[AI CHAT] Sending query to Gemini Copilot...`)
 
     try {
-      const response = await fetch('http://localhost:8000/api/chat', {
+      const apiBase = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:8000'
+      const response = await fetch(`${apiBase}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -562,20 +574,97 @@ export default function App() {
     setEyesUpAlert(null)
   }
 
-  // Manual Trigger to Simulate Telemetry updates (Sinusoid Noise loop)
+  // ── /ws/client  ──  Live edge-camera telemetry stream ──────────────────
+  // Connects to the backend dashboard WebSocket channel.
+  // On first valid telemetry packet: flip isLiveTelemetry → true and
+  // permanently kill the mock setInterval loop so data never races.
+  useEffect(() => {
+    if (!user) return
+
+    const envBase = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000'
+    const clientWsUrl = `${envBase}/ws/client`
+    let clientWs: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+    const connectClientWs = () => {
+      try {
+        clientWs = new WebSocket(clientWsUrl)
+
+        clientWs.onopen = () => {
+          addLog('[TELEMETRY] Live edge-camera stream connected (/ws/client).')
+        }
+
+        clientWs.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            if (data.type === 'telemetry' && Array.isArray(data.gates)) {
+              // ── First real packet: kill mock loop permanently ──
+              if (mockIntervalRef.current !== null) {
+                clearInterval(mockIntervalRef.current)
+                mockIntervalRef.current = null
+                setIsLiveTelemetry(true)
+                addLog('[TELEMETRY] Live edge-camera data received. Mock simulation disabled.')
+              }
+
+              // Merge live gate data from backend
+              setGates(data.gates.map((g: any) => ({
+                name: g.name,
+                flowRate: g.flowRate ?? 0,
+                waitTime: g.waitTime ?? 0,
+                capacity: g.capacity ?? 0,
+                status: (g.status as 'safe' | 'warning' | 'critical') ?? 'safe',
+                type: g.type ?? 'General',
+                signage: shouldDivertSignage(g.capacity ?? 0) ? 'DIVERT' : 'NORMAL'
+              })))
+
+              if (typeof data.avgWaitTime === 'number') {
+                setAvgWait(parseFloat(data.avgWaitTime.toFixed(1)))
+              }
+              if (typeof data.totalCapacity === 'number') {
+                setTotalAttendance(prev => Math.min(maxAttendance, prev + Math.floor(data.totalCapacity * 0.02)))
+              }
+            }
+          } catch {
+            // non-JSON heartbeat frames – silently ignore
+          }
+        }
+
+        clientWs.onclose = () => {
+          addLog('[TELEMETRY] Edge stream disconnected. Retrying in 5 s...')
+          reconnectTimer = setTimeout(connectClientWs, 5000)
+        }
+
+        clientWs.onerror = () => {
+          clientWs?.close()
+        }
+      } catch {
+        reconnectTimer = setTimeout(connectClientWs, 5000)
+      }
+    }
+
+    connectClientWs()
+
+    return () => {
+      clientWs?.close()
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+    }
+  }, [user])
+
+  // ── Mock simulation loop (demo fallback) ────────────────────────────────
+  // Runs only while no live edge-camera data has been received.
+  // Stores its interval ID in mockIntervalRef so the /ws/client handler
+  // above can clear it the moment a real telemetry packet arrives.
   useEffect(() => {
     if (!user) return
 
     const tick = setInterval(() => {
+      // Guard: if live data has taken over, bail out immediately
+      if (mockIntervalRef.current === null && isLiveTelemetry) return
+
       setGates(prev => prev.map(gate => {
-        // Continuous flow variations for realism
         const variance = Math.floor(Math.random() * 7) - 3
         const newCapacity = Math.max(5, Math.min(100, gate.capacity + variance))
-        
-        let newStatus: 'safe' | 'warning' | 'critical' = 'safe'
-        if (newCapacity > 80) newStatus = 'critical'
-        else if (newCapacity >= 50) newStatus = 'warning'
-        
+        const newStatus = classifyStatus(newCapacity)
         return {
           ...gate,
           capacity: newCapacity,
@@ -584,13 +673,17 @@ export default function App() {
           waitTime: Math.max(1, Math.round(newCapacity * 0.22))
         }
       }))
-
-      // Increment attendance and wait times
       setTotalAttendance(prev => Math.min(maxAttendance, prev + randomRange(5, 12)))
       setAvgWait(prev => Math.max(2.0, Math.min(25.0, prev + (Math.random() * 0.4 - 0.2))))
     }, 4500)
 
-    return () => clearInterval(tick)
+    // Store the ID so the /ws/client handler can clear it
+    mockIntervalRef.current = tick
+
+    return () => {
+      clearInterval(tick)
+      mockIntervalRef.current = null
+    }
   }, [user])
 
   const randomRange = (min: number, max: number) => {
@@ -818,8 +911,35 @@ export default function App() {
           </div>
 
           {/* WebSockets Connect Banner & Copilot Toggle */}
-          <div className="flex items-center gap-3">
-            
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+
+            {/* ── Data Source Indicator Badge ── */}
+            {isLiveTelemetry ? (
+              <div
+                id="live-telemetry-badge"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black tracking-widest uppercase
+                           bg-emerald-500/15 text-emerald-300 border border-emerald-500/40
+                           shadow-md shadow-emerald-500/10"
+              >
+                {/* Pulsing green dot */}
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+                </span>
+                <span>LIVE FROM EDGE CAMERAS</span>
+              </div>
+            ) : (
+              <div
+                id="simulating-badge"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black tracking-widest uppercase
+                           bg-amber-500/15 text-amber-300 border border-amber-500/40"
+              >
+                {/* Static amber dot */}
+                <span className="inline-flex rounded-full h-2 w-2 bg-amber-400" />
+                <span>SIMULATING DEMO DATA</span>
+              </div>
+            )}
+
             {/* AI Copilot Toggle Button */}
             <button 
               onClick={() => setChatOpen(!chatOpen)}
@@ -833,6 +953,7 @@ export default function App() {
               <span className="hidden xs:inline">AI COPILOT</span>
             </button>
 
+            {/* WS connection status pill */}
             <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] font-mono font-bold ${
               wsStatus === 'connected' 
                 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
@@ -896,21 +1017,8 @@ export default function App() {
           {/* 📱 GRID OF GATE DENSITY CARDS */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {gates.map((gate) => {
-              const isYellow = gate.capacity >= 50 && gate.capacity <= 80
-              const isRed = gate.capacity > 80
-
-              // Custom color configs with high-contrast text tags for outdoor sun visibility
-              const colorClass = isRed 
-                ? 'bg-rose-950/80 border-rose-500 shadow-rose-950/20' 
-                : isYellow 
-                  ? 'bg-amber-950/60 border-amber-500 shadow-amber-950/10' 
-                  : 'bg-emerald-950/40 border-emerald-500/80 shadow-emerald-950/10'
-
-              const badgeColor = isRed 
-                ? 'bg-rose-500 text-white font-bold' 
-                : isYellow 
-                  ? 'bg-amber-500 text-slate-950 font-black' 
-                  : 'bg-emerald-500 text-white font-bold'
+              const colorClass = getGateCardColorClass(gate.capacity)
+              const badgeColor = getGateBadgeColorClass(gate.capacity)
 
               return (
                 <div 
