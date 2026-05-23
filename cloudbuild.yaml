@@ -1,0 +1,75 @@
+# =====================================================================
+# ASTRACROWD AI - GOOGLE CLOUD BUILD PIPELINE CONFIGURATION
+# Coordinates parallel container compiles and serverless Cloud Run releases.
+# =====================================================================
+
+steps:
+  # -----------------------------------------------------------------
+  # CONCURRENT DOCKER IMAGES COMPILATION
+  # -----------------------------------------------------------------
+  # Step 1: Build Backend Container (Stage 1)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-backend'
+    args: [
+      'build',
+      '-t', '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-backend:$COMMIT_SHA',
+      '-t', '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-backend:latest',
+      './backend'
+    ]
+    waitFor: ['-'] # Starts immediately in parallel
+
+  # Step 2: Build Frontend Container (Stage 1)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
+    args: [
+      'build',
+      '-t', '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-frontend:$COMMIT_SHA',
+      '-t', '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-frontend:latest',
+      './frontend'
+    ]
+    waitFor: ['-'] # Starts immediately in parallel
+
+  # -----------------------------------------------------------------
+  # SERVERLESS DEPLOYMENT (GOOGLE CLOUD RUN)
+  # -----------------------------------------------------------------
+  # Step 3: Deploy Backend to Cloud Run (Starts immediately after backend compilation finishes)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-backend'
+    entrypoint: 'gcloud'
+    args: [
+      'run', 'deploy', '$_BACKEND_SERVICE',
+      '--image', '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-backend:$COMMIT_SHA',
+      '--region', '$_LOCATION',
+      '--platform', 'managed',
+      '--allow-unauthenticated'
+    ]
+    waitFor: ['build-backend']
+
+  # Step 4: Deploy Frontend to Cloud Run (Starts immediately after frontend compilation finishes)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-frontend'
+    entrypoint: 'gcloud'
+    args: [
+      'run', 'deploy', '$_FRONTEND_SERVICE',
+      '--image', '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-frontend:$COMMIT_SHA',
+      '--region', '$_LOCATION',
+      '--platform', 'managed',
+      '--allow-unauthenticated'
+    ]
+    waitFor: ['build-frontend']
+
+# Auto push built images to Google Cloud Artifact Registry
+images:
+  - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-backend:$COMMIT_SHA'
+  - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-backend:latest'
+  - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-frontend:$COMMIT_SHA'
+  - '$_LOCATION-docker.pkg.dev/$PROJECT_ID/$_REPO_NAME/astracrowd-frontend:latest'
+
+substitutions:
+  _LOCATION: 'us-central1'
+  _REPO_NAME: 'astracrowd-registry'
+  _BACKEND_SERVICE: 'astracrowd-backend'
+  _FRONTEND_SERVICE: 'astracrowd-frontend'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
