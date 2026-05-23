@@ -7,6 +7,9 @@ from httpx import ASGITransport, AsyncClient
 from app.main import (
     app as fastapi_app,
     read_root,
+    api_catalog,
+    api_status,
+    api_gates,
     post_telemetry_endpoint,
     TelemetryPayload,
     chat_endpoint,
@@ -24,6 +27,25 @@ def test_health_check():
     assert response["status"] == "online"
     assert response["service"] == "astracrowd-core"
     assert "guards_online" in response
+
+
+def test_api_catalog_lists_endpoints():
+    catalog = api_catalog()
+    assert catalog["service"] == "astracrowd-core"
+    assert "GET /api/gates" in catalog["endpoints"]
+
+
+def test_api_gates_snapshot():
+    data = api_gates()
+    assert data["type"] == "telemetry"
+    assert len(data["gates"]) >= 4
+    assert "Gate 3" in {g["name"] for g in data["gates"]}
+
+
+def test_api_status():
+    data = api_status()
+    assert data["status"] == "online"
+    assert "dashboard_clients" in data
 
 
 def test_telemetry_post_handler_updates_gate():
@@ -108,13 +130,24 @@ def test_unauthenticated_firebase_failure():
         auth_module.firebase_app = original_app
 
 
-def test_production_blocks_dev_token(monkeypatch):
+def test_production_blocks_dev_token_without_demo_flag(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("ALLOW_DEMO_AUTH", raising=False)
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="dev-token")
     with pytest.raises(HTTPException) as exc:
         asyncio.run(get_current_user(creds))
     assert exc.value.status_code == 403
     monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+
+def test_production_allows_dev_token_when_demo_flag_set(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("ALLOW_DEMO_AUTH", "true")
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="dev-token")
+    user = asyncio.run(get_current_user(creds))
+    assert user["uid"] == "dev-user-123"
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("ALLOW_DEMO_AUTH", raising=False)
 
 
 def test_chat_handler_dev(force_mock_gemini):

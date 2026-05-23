@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
-import { initializeApp } from 'firebase/app'
 import { 
-  getAuth, 
   signInWithEmailAndPassword, 
   signOut,
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth'
+import { firebaseAuth as firebaseAuthObj, isFirebaseConfigured } from './firebaseConfig'
 import {
   classifyStatus,
   getGateCardColorClass,
@@ -33,31 +32,6 @@ import {
   Sparkles,
   X
 } from 'lucide-react'
-
-// =====================================================================
-// OPTIONAL FIREBASE INITIALIZATION CONFIG
-// =====================================================================
-// Note: In local development or production builds, these variables are injected 
-// at compile time by Vite using VITE_-prefixed environment configs (VITE_FIREBASE_*)
-// e.g. apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyFakeKey-AstraCrowdAI12345"
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyFakeKey-AstraCrowdAI12345",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "astracrowd-ai.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "astracrowd-ai",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "astracrowd-ai.appspot.com",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:12345abc"
-}
-
-// Safely initialize firebase instance
-let firebaseAppObj: any = null
-let firebaseAuthObj: any = null
-try {
-  firebaseAppObj = initializeApp(firebaseConfig)
-  firebaseAuthObj = getAuth(firebaseAppObj)
-} catch (e) {
-  console.warn("[FIREBASE INITIALIZATION] Bypassing active server config setup:", e)
-}
 
 // =====================================================================
 // CUSTOM WEBSOCKET CLIENT HOOK WITH RECONNECT LOGIC
@@ -447,8 +421,7 @@ export default function App() {
     setIsLoading(true)
     setAuthError("")
 
-    // Try real login if credentials entered and firebase available
-    if (firebaseAuthObj && email && password) {
+    if (isFirebaseConfigured() && firebaseAuthObj && email && password) {
       try {
         const userCredential = await signInWithEmailAndPassword(firebaseAuthObj, email, password)
         const token = await userCredential.user.getIdToken()
@@ -484,7 +457,7 @@ export default function App() {
     setAuthError("")
     addLog(`[AUTH] Initiating Google single sign-on...`)
 
-    if (firebaseAuthObj) {
+    if (isFirebaseConfigured() && firebaseAuthObj) {
       try {
         const provider = new GoogleAuthProvider()
         const userCredential = await signInWithPopup(firebaseAuthObj, provider)
@@ -494,26 +467,18 @@ export default function App() {
         addLog(`[AUTH] Google signed-in successfully. UID: ${userCredential.user.uid}`)
       } catch (err: any) {
         console.error('[AUTH ERROR] Google login failed:', err)
-        setAuthError(err.message || "Failed to authenticate with Google.")
+        setAuthError(
+          err.message ||
+            'Google sign-in failed. Add this site to Firebase Authorized domains, or use Demo Login below.'
+        )
       } finally {
         setIsLoading(false)
       }
       return
     }
 
-    // Offline sandbox bypass logic
-    setTimeout(() => {
-      const dummyUser = {
-        email: "google-operator@astracrowd.ai",
-        uid: `google-guard-uid-${Math.floor(Math.random() * 900) + 100}`,
-        displayName: "Google Operator (Demo)",
-        photoURL: "https://lh3.googleusercontent.com/a/default-user"
-      }
-      setUser(dummyUser)
-      setIdToken("dev-google-token")
-      addLog(`[AUTH] Google single sign-on approved (Sandbox Bypass). Zone: ${authZone}`)
-      setIsLoading(false)
-    }, 1200)
+    setAuthError('Google Sign-In requires Firebase configuration. Use "Demo Login" or "Guard Demo" instead.')
+    setIsLoading(false)
   }
 
   // Dummy Guard Single Sign-On Bypass
@@ -571,6 +536,41 @@ export default function App() {
     }
     setEyesUpAlert(null)
   }
+
+  // Load gate snapshot from REST API (works on Cloud Run single-URL deploy)
+  useEffect(() => {
+    if (!user) return
+
+    const loadGatesFromApi = async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/api/gates`)
+        if (!res.ok) {
+          addLog(`[API] /api/gates returned ${res.status}`)
+          return
+        }
+        const data = await res.json()
+        if (Array.isArray(data.gates)) {
+          setGates(data.gates.map((g: Gate) => ({
+            name: g.name,
+            flowRate: g.flowRate ?? 0,
+            waitTime: g.waitTime ?? 0,
+            capacity: g.capacity ?? 0,
+            status: (g.status as Gate['status']) ?? 'safe',
+            type: g.type ?? 'General',
+            signage: shouldDivertSignage(g.capacity ?? 0) ? 'DIVERT' : 'NORMAL',
+          })))
+          if (typeof data.avgWaitTime === 'number') {
+            setAvgWait(parseFloat(Number(data.avgWaitTime).toFixed(1)))
+          }
+          addLog('[API] Gate telemetry loaded from /api/gates')
+        }
+      } catch (err) {
+        console.warn('[API] Failed to load /api/gates', err)
+      }
+    }
+
+    loadGatesFromApi()
+  }, [user])
 
   // ── /ws/client  ──  Live edge-camera telemetry stream ──────────────────
   // Connects to the backend dashboard WebSocket channel.
@@ -789,7 +789,7 @@ export default function App() {
               <div className="flex-1 border-t border-white/10"></div>
             </div>
 
-            {/* Google Sign-In Button */}
+            {isFirebaseConfigured() && (
             <button 
               type="button"
               onClick={handleGoogleLogin}
@@ -804,8 +804,8 @@ export default function App() {
               </svg>
               <span>Sign In with Google</span>
             </button>
+            )}
 
-            {/* Dummy Credentials Bypass Button */}
             <button 
               type="button"
               onClick={handleDummyLogin}
@@ -813,14 +813,17 @@ export default function App() {
               className="w-full py-3.5 mt-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 hover:scale-[1.01] active:scale-[0.99] text-white font-black tracking-widest text-xs uppercase transition-all shadow-lg shadow-emerald-700/20 flex items-center justify-center gap-2 cursor-pointer border border-emerald-500/20"
             >
               <Shield className="w-4 h-4" />
-              <span>Use Dummy Credentials</span>
+              <span>Guard Demo Login</span>
             </button>
 
-            {/* Sandbox Developer Bypass Hint */}
             <div className="mt-6 pt-5 border-t border-white/5 text-center">
-              <span className="text-[10px] font-mono text-slate-500 block uppercase font-bold tracking-wider">Sandbox Environment active</span>
+              <span className="text-[10px] font-mono text-slate-500 block uppercase font-bold tracking-wider">
+                {isFirebaseConfigured() ? 'Firebase auth enabled' : 'Demo mode — no Firebase keys'}
+              </span>
               <p className="text-[11px] text-slate-400 mt-2">
-                Leaving email/password blank or clicking the Google sign-in will initiate a secure/mock **Developer Session** with local overrides.
+                {isFirebaseConfigured()
+                  ? 'Use email/password or Google. Or use Guard Demo for a field-guard session.'
+                  : 'Click Initialize Ops Session (empty fields) or Guard Demo Login. Configure VITE_FIREBASE_* at build time for real Google sign-in.'}
               </p>
             </div>
 

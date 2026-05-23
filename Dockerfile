@@ -34,6 +34,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
+# Allow dashboard demo login until Firebase is configured (set to false for strict prod)
+ENV ALLOW_DEMO_AUTH=true
 
 COPY backend/app ./app
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html

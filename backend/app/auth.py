@@ -8,6 +8,34 @@ from app.logging_setup import logger
 # Security scheme for JWT extraction
 security = HTTPBearer()
 
+# Frontend sandbox tokens (disabled in production unless ALLOW_DEMO_AUTH=true)
+DEMO_AUTH_TOKENS = frozenset({"dev-token", "dummy-guard-token", "dev-google-token"})
+
+
+def demo_auth_enabled() -> bool:
+    """Allow sandbox login tokens (Cloud Run demo or local dev)."""
+    if os.getenv("ENVIRONMENT") != "production":
+        return True
+    return os.getenv("ALLOW_DEMO_AUTH", "").lower() in ("1", "true", "yes")
+
+
+def demo_user_for_token(token: str) -> dict | None:
+    if token == "dummy-guard-token":
+        return {
+            "uid": "guard_dev_001",
+            "email": "guard1@stadiumsec.com",
+            "role": "FieldStaff",
+            "zone": "Gate 3",
+        }
+    if token in ("dev-token", "dev-google-token"):
+        return {
+            "uid": "dev-user-123",
+            "name": "Stadium Admin (Bypass)",
+            "email": "admin@astracrowd.ai",
+            "role": "ops_director",
+        }
+    return None
+
 # Initialize Firebase Admin SDK
 firebase_app = None
 try:
@@ -32,31 +60,24 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     Secured against production environment bypasses.
     """
     token = credentials.credentials
-    is_production = os.getenv("ENVIRONMENT") == "production"
-    
-    # Block developer backdoors in production
-    if is_production and (token == "dev-token" or token == "dummy-guard-token"):
-        logger.error(f"[SECURITY] Attempted backdoor credentials access in production: {token}")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Developer backdoor token disabled in production environment."
-        )
-        
-    # Enable a simple bypass for local developers running tests or frontend prototyping
-    if token == "dummy-guard-token":
-        return {
-            "uid": "guard_dev_001",
-            "email": "guard1@stadiumsec.com",
-            "role": "FieldStaff",
-            "zone": "Gate 3",
-        }
 
-    if token == "dev-token" or firebase_app is None:
+    if token in DEMO_AUTH_TOKENS:
+        if not demo_auth_enabled():
+            logger.error(f"[SECURITY] Demo token blocked in production: {token}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Demo login is disabled. Configure Firebase or set ALLOW_DEMO_AUTH=true.",
+            )
+        demo_user = demo_user_for_token(token)
+        if demo_user:
+            return demo_user
+
+    if firebase_app is None:
         return {
             "uid": "dev-user-123",
             "name": "Stadium Admin (Bypass)",
             "email": "admin@astracrowd.ai",
-            "role": "ops_director"
+            "role": "ops_director",
         }
         
     try:
@@ -76,8 +97,6 @@ async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) 
     If the token is invalid or missing, rejects the socket connection.
     Secured against production environment bypasses.
     """
-    is_production = os.getenv("ENVIRONMENT") == "production"
-    
     if not token:
         logger.warning("[AUTH] WS Connection rejected: Token query parameter missing.")
         # Reject connection with policy violation status
@@ -85,31 +104,24 @@ async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) 
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Token missing")
         return None
 
-    # Block developer backdoors in production
-    if is_production and (token == "dev-token" or token == "dummy-guard-token"):
-        logger.error(f"[SECURITY] Blocked backdoor token '{token}' in production environment.")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Developer backdoor token disabled in production environment."
-        )
-        
-    # Local developer bypass mode
-    if token == "dummy-guard-token":
-        logger.info("[AUTH] WS Connection accepted via Dummy Guard Bypass.")
-        return {
-            "uid": "guard_dev_001",
-            "email": "guard1@stadiumsec.com",
-            "role": "FieldStaff",
-            "zone": "Gate 3",
-        }
-        
-    if token == "dev-token" or firebase_app is None:
+    if token in DEMO_AUTH_TOKENS:
+        if not demo_auth_enabled():
+            logger.error(f"[SECURITY] Blocked demo token '{token}' in production.")
+            await websocket.accept()
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Demo auth disabled")
+            return None
+        demo_user = demo_user_for_token(token)
+        if demo_user:
+            logger.info(f"[AUTH] WS Connection accepted via demo token ({token}).")
+            return demo_user
+
+    if firebase_app is None:
         logger.info("[AUTH] WS Connection accepted via Developer Bypass.")
         return {
             "uid": "dev-guard-77",
             "name": "Local Guard 77",
             "role": "guard",
-            "zone": "Gate 3"  # Mock zone claim
+            "zone": "Gate 3",
         }
         
     try:

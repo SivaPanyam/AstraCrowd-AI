@@ -146,6 +146,56 @@ def health_check():
 def read_root():
     return health_check()
 
+
+# =====================================================================
+# REST API (all routes under /api/* — proxied by nginx on Cloud Run)
+# =====================================================================
+
+@app.get("/api")
+def api_catalog():
+    """API index — verify deploy exposed all routes."""
+    return {
+        "service": "astracrowd-core",
+        "version": "1.2.0",
+        "endpoints": {
+            "GET /api": "This catalog",
+            "GET /api/status": "Health + connection counts",
+            "GET /api/gates": "Live gate telemetry snapshot",
+            "POST /api/telemetry": "Edge camera / CV density ingest",
+            "POST /api/chat": "AI copilot (Authorization: Bearer)",
+            "GET /health": "Liveness probe",
+            "GET /docs": "Swagger UI",
+            "WS /ws/client": "Dashboard stream",
+            "WS /ws/alerts": "Guard alerts (?token=&zone=)",
+            "WS /ws/edge/{node_id}": "Edge CV nodes",
+        },
+    }
+
+
+@app.get("/api/status")
+def api_status():
+    return {
+        "status": "online",
+        "service": "astracrowd-core",
+        "guards_online": len(guard_manager.active_guards),
+        "cv_nodes_online": len(edge_manager.active_edge_nodes),
+        "dashboard_clients": len(edge_manager.active_clients),
+        "allow_demo_auth": os.getenv("ALLOW_DEMO_AUTH", "false"),
+    }
+
+
+@app.get("/api/gates")
+def api_gates():
+    """Current gate metrics for dashboard initial load."""
+    return {
+        "type": "telemetry",
+        "gates": gates_db,
+        "totalCapacity": sum(g["flowRate"] * 4 for g in gates_db),
+        "avgWaitTime": sum(g["waitTime"] for g in gates_db) / len(gates_db) if gates_db else 0,
+        "timestamp": time.time(),
+    }
+
+
 from pydantic import BaseModel, field_validator
 
 class TelemetryPayload(BaseModel):

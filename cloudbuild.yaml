@@ -45,6 +45,8 @@ steps:
       - '0'
       - '--max-instances'
       - '10'
+      - '--set-env-vars'
+      - 'ENVIRONMENT=production,ALLOW_DEMO_AUTH=true'
     waitFor: ['push']
 
 images:
