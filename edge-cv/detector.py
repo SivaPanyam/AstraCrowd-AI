@@ -1,12 +1,14 @@
+import argparse
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
+import random
 import sys
 import time
-import urllib.request
-import urllib.error
 import cv2
 import numpy as np
+import requests
 
 try:
     from ultralytics import YOLO
@@ -22,42 +24,44 @@ POST_INTERVAL = 2.0  # Seconds between telemetry dispatches
 
 # Operational threshold capacities for zones to calculate density percentage
 ZONE_CAPACITIES = {
-    "Gate 1": 25,
-    "Gate 2": 25
+    "Gate_1": 25,
+    "Gate_2": 25
 }
 
 def post_telemetry(payload: dict):
     """
     Sends the packaged JSON telemetry payload to the FastAPI backend API
-    using Python's robust built-in urllib standard library.
+    using a robust requests.post() wrapper.
+    Gracefully handles backend connectivity drops without crashing the loop.
     """
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        BACKEND_API_URL, 
-        data=data, 
-        headers={"Content-Type": "application/json"}
-    )
     try:
-        # Perform synchronous POST request
-        with urllib.request.urlopen(req, timeout=3.0) as response:
-            status_code = response.getcode()
-            if status_code in (200, 201):
-                print(f"[DETECTOR POST] Telemetry sent: Zone={payload['zone_id']} Density={payload['density_percentage']}%")
-            else:
-                print(f"[DETECTOR POST] Received unexpected status code: {status_code}")
-    except urllib.error.URLError as e:
-        print(f"[DETECTOR POST ERROR] Could not connect to backend ({e.reason}). Is FastAPI server running?")
-    except Exception as e:
-        print(f"[DETECTOR POST ERROR] Anomaly encountered during network post: {e}")
+        response = requests.post(BACKEND_API_URL, json=payload, timeout=3.0)
+        if response.status_code in (200, 201):
+            print(f"[DETECTOR POST] Successfully synced: Gate={payload['gate_id']} Density={payload['density_percentage']}%")
+        else:
+            print(f"[DETECTOR WARNING] Backend returned status code {response.status_code}: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"[DETECTOR CONNECTIVITY DROP] Backend unreachable ({e}). Continuing frame processing...")
 
 def run_crowd_detector():
     """
     Processes video feed frame by frame, performs YOLOv8 detection on persons,
-    partitions frame spatially into Gate 1/Gate 2 zones, and POSTs crowd density percentages.
+    partitions frame spatially, and posts crowd density metrics at regular intervals.
     """
+    # 1. PARSE CLI SOURCE ARGUMENTS
+    parser = argparse.ArgumentParser(description="AstraCrowd AI Edge CV Ingress Node Detector")
+    parser.add_argument(
+        "--source", 
+        type=str, 
+        default=None, 
+        help="Path to external video file, stream URL, or camera index (default: falls back to index 0/mock)"
+    )
+    args = parser.parse_args()
+    source = args.source
+
     print("[DETECTOR] Initializing Crowd Ingress Detector Node...")
     
-    # Initialize YOLOv8 Model if library is installed
+    # 2. CACHE YOLOv8 MODEL LAYERS
     model = None
     if YOLO_AVAILABLE:
         try:
@@ -68,10 +72,26 @@ def run_crowd_detector():
             print(f"[DETECTOR] Failed to load YOLOv8 model layers: {e}. Defaulting to sandbox.")
             model = None
 
-    # Open video capture device (0 is standard local webcam)
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("[DETECTOR] Warning: No hardware video capture device active. Initiating virtual video stream.")
+    # 3. CONFIGURE HARDWARE VIDEO STREAM
+    cap = None
+    if source is not None:
+        try:
+            # Check if source is a camera index integer
+            source_parsed = int(source)
+        except ValueError:
+            source_parsed = source
+            
+        print(f"[DETECTOR] Attempting to open custom stream source: {source_parsed}")
+        cap = cv2.VideoCapture(source_parsed)
+        if not cap.isOpened():
+            print(f"[DETECTOR] Warning: Custom source '{source}' unreachable. Falling back to webcam 0.")
+            cap = cv2.VideoCapture(0)
+    else:
+        print("[DETECTOR] Source path not provided. Initiating default webcam index 0.")
+        cap = cv2.VideoCapture(0)
+
+    if cap is not None and not cap.isOpened():
+        print("[DETECTOR] Warning: Webcam index 0 inactive. Proceeding in virtual sandbox simulation mode.")
 
     last_post_time = time.time()
     
@@ -84,7 +104,7 @@ def run_crowd_detector():
             
             # Read frame
             ret = False
-            if cap.isOpened():
+            if cap is not None and cap.isOpened():
                 ret, frame = cap.read()
                 
             if ret and frame is not None:
@@ -118,25 +138,28 @@ def run_crowd_detector():
                 gate2_count = random_detection_simulation(last_post_time + 10, 6, 17)
 
             # Calculate density percentages
-            gate1_density = min(100.0, round((gate1_count / ZONE_CAPACITIES["Gate 1"]) * 100.0, 1))
-            gate2_density = min(100.0, round((gate2_count / ZONE_CAPACITIES["Gate 2"]) * 100.0, 1))
+            gate1_density = min(100.0, round((gate1_count / ZONE_CAPACITIES["Gate_1"]) * 100.0, 1))
+            gate2_density = min(100.0, round((gate2_count / ZONE_CAPACITIES["Gate_2"]) * 100.0, 1))
 
             # Dispatch telemetry payload every 2 seconds
             current_time = time.time()
             if current_time - last_post_time >= POST_INTERVAL:
-                # Package payloads
+                # Format ISO-8601 UTC string
+                iso_timestamp = datetime.now(timezone.utc).isoformat()
+                
+                # Packaging strictly to: {"gate_id": "Gate_1", "density_percentage": 85.5, "timestamp": "ISO-8601-string"}
                 payload_gate1 = {
-                    "timestamp": current_time,
-                    "zone_id": "Gate 1",
-                    "density_percentage": gate1_density
+                    "gate_id": "Gate_1",
+                    "density_percentage": gate1_density,
+                    "timestamp": iso_timestamp
                 }
                 payload_gate2 = {
-                    "timestamp": current_time,
-                    "zone_id": "Gate 2",
-                    "density_percentage": gate2_density
+                    "gate_id": "Gate_2",
+                    "density_percentage": gate2_density,
+                    "timestamp": iso_timestamp
                 }
                 
-                # POST telemetry data to FastAPI backend endpoints
+                # POST telemetry data
                 post_telemetry(payload_gate1)
                 post_telemetry(payload_gate2)
                 
@@ -150,7 +173,7 @@ def run_crowd_detector():
     except KeyboardInterrupt:
         print("\n[DETECTOR] Detector thread cleanly halted by KeyboardInterrupt.")
     finally:
-        if cap.isOpened():
+        if cap is not None and cap.isOpened():
             cap.release()
 
 def random_detection_simulation(seed_offset, min_people, max_people):

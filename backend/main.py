@@ -246,9 +246,9 @@ def read_root():
 from pydantic import BaseModel
 
 class TelemetryPayload(BaseModel):
-    timestamp: float
-    zone_id: str
+    gate_id: str
     density_percentage: float
+    timestamp: str  # ISO-8601 string
 
 @app.post("/api/telemetry", status_code=201)
 async def post_telemetry_endpoint(payload: TelemetryPayload):
@@ -256,7 +256,8 @@ async def post_telemetry_endpoint(payload: TelemetryPayload):
     Receives JSON telemetry from edge-cv node detectors and broadcasts
     calculated crowd flow rates and congestion warnings to connected dashboards.
     """
-    zone = payload.zone_id
+    # Normalize Gate ID by replacing underscores with spaces (e.g. "Gate_1" to "Gate 1")
+    zone = payload.gate_id.replace("_", " ")
     density = payload.density_percentage
     print(f"[API TELEMETRY] Inflow registered from {zone}: Density={density}%")
     
