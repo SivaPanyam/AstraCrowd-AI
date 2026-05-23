@@ -506,6 +506,27 @@ export default function App() {
     }, 1200)
   }
 
+  // Dummy Guard Single Sign-On Bypass
+  const handleDummyLogin = () => {
+    setIsLoading(true)
+    setAuthError("")
+    addLog(`[AUTH] Initiating Dummy Guard single sign-on bypass...`)
+
+    setTimeout(() => {
+      const dummyUser = {
+        email: "guard1@stadiumsec.com",
+        uid: "guard_dev_001",
+        displayName: "Dummy Guard 001",
+        role: "FieldStaff"
+      }
+      setUser(dummyUser)
+      setIdToken("dummy-guard-token")
+      setAuthZone("Gate 3")
+      addLog(`[AUTH] Dummy guard developer bypass approved. Connection established with Gate 3.`)
+      setIsLoading(false)
+    }, 600)
+  }
+
   // Handle Logout
   const handleLogout = async () => {
     if (firebaseAuthObj) {
@@ -692,6 +713,17 @@ export default function App() {
                 <path d="M12,7.27c1.28,0 2.43,0.44 3.34,1.31l2.5,-2.5C16.33,4.68 14.35,3.92 12,3.92c-3.54,0 -6.57,2 -8.04,4.92l4.34,2.66c0.69,-2.06 2.62,-3.6 4.9,-3.6Z" fill="#EA4335" />
               </svg>
               <span>Sign In with Google</span>
+            </button>
+
+            {/* Dummy Credentials Bypass Button */}
+            <button 
+              type="button"
+              onClick={handleDummyLogin}
+              disabled={isLoading}
+              className="w-full py-3.5 mt-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 hover:scale-[1.01] active:scale-[0.99] text-white font-black tracking-widest text-xs uppercase transition-all shadow-lg shadow-emerald-700/20 flex items-center justify-center gap-2 cursor-pointer border border-emerald-500/20"
+            >
+              <Shield className="w-4 h-4" />
+              <span>Use Dummy Credentials</span>
             </button>
 
             {/* Sandbox Developer Bypass Hint */}

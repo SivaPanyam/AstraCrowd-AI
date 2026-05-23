@@ -33,6 +33,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     token = credentials.credentials
     
     # Enable a simple bypass for local developers running tests or frontend prototyping
+    if token == "dummy-guard-token":
+        return {
+            "uid": "guard_dev_001",
+            "email": "guard1@stadiumsec.com",
+            "role": "FieldStaff",
+            "zone": "Gate_3"
+        }
+
     if token == "dev-token" or firebase_app is None:
         return {
             "uid": "dev-user-123",

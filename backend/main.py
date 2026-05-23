@@ -74,6 +74,15 @@ async def verify_firebase_token(websocket: WebSocket, token: str = Query(None)) 
         return None
         
     # Local developer bypass mode
+    if token == "dummy-guard-token":
+        logger.info("[AUTH] WS Connection accepted via Dummy Guard Bypass.")
+        return {
+            "uid": "guard_dev_001",
+            "email": "guard1@stadiumsec.com",
+            "role": "FieldStaff",
+            "zone": "Gate_3"
+        }
+
     if token == "dev-token" or firebase_app is None:
         logger.info("[AUTH] WS Connection accepted via Developer Bypass.")
         return {
@@ -447,6 +456,7 @@ async def websocket_alerts_endpoint(
     
     # 2. EXTRACT ZONE MAPPING (Claims, fallback to query param or default CommandCenter)
     guard_zone = claims.get("zone") or zone or "CommandCenter"
+    guard_zone = guard_zone.replace("_", " ")
     
     # 3. REGISTER IN GUARD MANAGER
     await guard_manager.connect(uid, guard_zone, name, websocket)
